@@ -1,7 +1,44 @@
-# TODO: Define 4 services: db, api, rabbitmq, consumer
-#
-# Requirements:
-# - db: postgres:17-alpine
-# - rabbitmq: rabbitmq:3-management, ports 5672 and 15672
-# - api: depends_on db and rabbitmq
-# - consumer: depends_on rabbitmq
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: node_registry
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d node_registry"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql://user:password@db:5432/node_registry
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  consumer:
+    build: ./consumer
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy

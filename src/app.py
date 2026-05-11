@@ -1,3 +1,6 @@
+import json
+import os
+import pika
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, Response
 from sqlalchemy import text
@@ -8,6 +11,34 @@ from src.schemas import NodeCreate, NodeResponse, NodeUpdate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+QUEUE_NAME = "node_events"
+
+def publish_event(event_type: str, node_name: str):
+    try:
+        params = pika.URLParameters(RABBITMQ_URL)
+        connection = pika.BlockingConnection(params)
+        channel = connection.channel()
+        channel.queue_declare(queue=QUEUE_NAME, durable=True)
+        
+        message = {
+            "event": event_type,
+            "node_name": node_name,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        channel.basic_publish(
+            exchange='',
+            routing_key=QUEUE_NAME,
+            body=json.dumps(message),
+            properties=pika.BasicProperties(
+                delivery_mode=2,  # make message persistent
+            )
+        )
+        connection.close()
+    except Exception as e:
+        print(f"Failed to publish event: {e}")
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
@@ -28,6 +59,9 @@ def register_node(node: NodeCreate, db: Session = Depends(get_db)):
     db.add(db_node)
     db.commit()
     db.refresh(db_node)
+    
+    publish_event("node_registered", db_node.name)
+    
     return db_node
 
 @app.get("/api/nodes", response_model=list[NodeResponse])
@@ -63,11 +97,7 @@ def delete_node(name: str, db: Session = Depends(get_db)):
     node.status = "inactive"
     node.updated_at = datetime.now(timezone.utc)
     db.commit()
+    
+    publish_event("node_deleted", name)
+    
     return Response(status_code=204)
-
-# TODO: After each POST /api/nodes (register) and DELETE /api/nodes/{name},
-# publish an event to RabbitMQ with this format:
-# {"event": "node_registered" or "node_deleted", "node_name": "<name>", "timestamp": "<ISO8601>"}
-#
-# Use pika to connect to RabbitMQ at RABBITMQ_URL env var.
-# Queue name: "node_events"
